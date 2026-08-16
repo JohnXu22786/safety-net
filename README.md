@@ -1,3 +1,5 @@
+[English](README.en.md)
+
 # Barricade（路障）
 
 > 编码 agent 的破坏性命令拦截闸门：在 `rm -rf`、`git reset --hard`、`git push --force` 这类命令真正落地**之前**解析命令语义、判定风险，并要求人工确认。
@@ -56,6 +58,12 @@ npm link          # 之后可直接使用 barricade 命令
 ## 接入 dsh（DeepSeek Harness）
 
 本仓库即一个合法的 dsh bundle：`package.json` 声明了 `dsh.bundle`，`cordis.patch.yml` 是配置层补丁，`plugin.js` 是插件入口。
+
+### 在 DSH 中安装
+
+```bash
+dsh plugin --profile demo add github:JohnXu22786/safety-net
+```
 
 ### 加载方式
 
@@ -269,4 +277,4 @@ test/               181 个测试用例
 
 ## License
 
-MIT
+[MIT](LICENSE)
