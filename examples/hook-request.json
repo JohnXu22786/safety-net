@@ -1,0 +1,4 @@
+{
+  "command": "git push --force origin main",
+  "cwd": "/home/user/project"
+}

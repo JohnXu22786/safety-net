@@ -1,0 +1,15 @@
+{
+  "command": "git push --force origin main",
+  "action": "ask",
+  "severity": "high",
+  "reason": "强制推送覆盖远端提交历史，可能造成他人工作丢失",
+  "matches": [
+    {
+      "ruleId": "git/push-force",
+      "severity": "high",
+      "title": "强制推送",
+      "message": "强制推送覆盖远端提交历史，可能造成他人工作丢失"
+    }
+  ],
+  "warnings": []
+}

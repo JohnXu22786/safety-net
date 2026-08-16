@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "level": "balanced",
+  "failClosed": false,
+  "allowlist": ["git status", "git log", "ls -la", "ps aux"],
+  "overrides": {
+    "git/tag-delete": "allow"
+  },
+  "rules": [
+    {
+      "id": "custom/dropdb-force",
+      "command": "dropdb",
+      "args": ["--force"],
+      "severity": "high",
+      "reason": "强制删除数据库不可恢复"
+    },
+    {
+      "id": "custom/terraform-destroy",
+      "command": "terraform",
+      "subcommand": "destroy",
+      "args": ["-auto-approve"],
+      "severity": "high",
+      "reason": "自动批准的资源销毁无法回退"
+    }
+  ],
+  "confirmation": {
+    "sessionMemory": true,
+    "timeoutSeconds": 0
+  }
+}

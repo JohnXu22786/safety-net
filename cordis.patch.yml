@@ -1,0 +1,13 @@
+# Barricade 的 dsh 配置层补丁。
+# dsh 加载本 bundle 时，会按此文件向运行配置中插入插件行。
+# 说明: id 是插件行标识, name 解析自 bundle 包名（dsh-barricade）。
+# 如需在 Web UI / headless 会话中调整行为，可在此补充 config 字段, 例如:
+#   - insert:
+#       - id: barricade
+#         name: dsh-barricade
+#         config:
+#           mode: deny          # deny=硬拒绝; ask=经 approval 服务请求人工确认
+#           toolNames: [bash, run_code]
+- insert:
+    - id: barricade
+      name: dsh-barricade
