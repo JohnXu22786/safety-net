@@ -1,21 +1,21 @@
-[English](README.en.md)
+[简体中文](README.zh.md)
 
-# Barricade（路障）
+# Barricade
 
-> 编码 agent 的破坏性命令拦截闸门：在 `rm -rf`、`git reset --hard`、`git push --force` 这类命令真正落地**之前**解析命令语义、判定风险，并要求人工确认。
+> A destructive-command interception gate for coding agents: it parses command semantics and judges risk **before** `rm -rf`, `git reset --hard`, `git push --force` and similar commands actually land, then requires human confirmation.
 
-Barricade 是一枚自包含的插件/CLI，零运行时依赖（纯 Node.js ESM），面向所有「把 shell 交给 agent 去跑」的 harness 设计。它不做沙箱、不限制能力，只做一件事：**把不可逆的操作挡在确认关卡前**——包括那些沙箱也拦不住的（`git reset --hard` 丢弃工作区、`git push --force` 覆盖远端历史、`rm -rf` 删掉工作区内未跟踪文件）。
+Barricade is a self-contained plugin/CLI with zero runtime dependencies (pure Node.js ESM), designed for any harness that "hands the shell over to an agent". It does not sandbox and does not limit capabilities; it does only one thing: **hold irreversible operations at a confirmation gate** — including those even a sandbox can't stop (`git reset --hard` discards the working tree, `git push --force` overwrites remote history, `rm -rf` deletes untracked files in the workspace).
 
-## 能力一览
+## Capabilities at a Glance
 
-- **语义级命令解析**：不是字符串匹配。自带 POSIX 词法分析器，识别引号、转义、heredoc、命令替换 `$(...)`、子 shell、管道链；`bash -c "rm -rf /"`、`sudo rm -rf /`、`eval "rm -rf /"`、`echo $(rm -rf /)` 都逃不过。
-- **分命令判定器**：git（reset/clean/push/checkout/branch/stash/restore 等 13 种危险形态，支持长旗标唯一前缀、短旗标解绑）、rm（按目标作用域分级：根目录/主目录/.git → 致命；工作区外/动态目标 → 高危；工作区内 → 中危）、dd/mkfs/shred/chmod/chown、find -delete、curl|sh、解释器单行、fork 炸弹、PowerShell 强删等 41 条内置规则。
-- **三级策略**：`relaxed` / `balanced`（默认）/ `vigilant`，严重度 → 动作（拒绝/确认/放行）逐级映射，`vigilant` 下无法解析的输入按需确认（fail-closed）。
-- **交互式确认**：TTY 下展示命令与命中规则，支持执行一次 / 拒绝 / 本会话放行 / 永久放行（写入策略）/ 查看详情；非 TTY 环境一律拒绝（失败安全）。
-- **多 harness 可移植**：判定核心与 harness 无关（输入 `(命令, 工作目录, 策略)`，输出结构化判定），三种接入形态任选：dsh 进程内插件、通用 stdin-hook JSON 契约、`gate` shell 包装。
-- **审计**：拦截与确认记录落盘 JSONL，密钥类内容自动脱敏。
+- **Semantic-level command parsing**: not string matching. Ships its own POSIX lexer that recognizes quotes, escapes, heredocs, command substitution `$(...)`, sub-shells and pipeline chains; `bash -c "rm -rf /"`, `sudo rm -rf /`, `eval "rm -rf /"`, `echo $(rm -rf /)` cannot slip through.
+- **Per-command verifiers**: git (reset/clean/push/checkout/branch/stash/restore — 13 dangerous forms, supporting long-flag unique prefixes and short-flag unbinding), rm (tiered by target scope: root/home/.git → fatal; outside workspace / dynamic targets → high; inside workspace → medium), dd/mkfs/shred/chmod/chown, find -delete, curl|sh, interpreter one-liners, fork bombs, PowerShell forced deletion — 41 built-in rules.
+- **Three levels**: `relaxed` / `balanced` (default) / `vigilant`, mapping severity → action (deny/ask/allow) tier by tier; under `vigilant`, unparseable inputs ask as needed (fail-closed).
+- **Interactive confirmation**: on a TTY it shows the command and matched rules, supporting run once / deny / allow for this session / allow permanently (written to policy) / show details; non-TTY environments always deny (fail-safe).
+- **Portable across harnesses**: the verdict core is harness-agnostic (input `(command, cwd, level)`, output structured verdict); three integration forms to choose from: a dsh in-process plugin, a generic stdin-hook JSON contract, and a `gate` shell wrapper.
+- **Audit**: interception and confirmation records are persisted as JSONL; secret-like content is automatically redacted.
 
-## 工作原理
+## How It Works
 
 ```
 agent 准备执行命令
@@ -36,16 +36,16 @@ agent 准备执行命令
                               非 TTY：拒绝（失败安全）
 ```
 
-分析引擎的关键环节：
+Key steps of the analysis engine:
 
-1. **分词**：POSIX 风格词法分析（引号/转义/操作符/heredoc 正文/命令替换提取），输入超限或无法解析时回退到粗粒度模式扫描。
-2. **分段**：按 `&&` `||` `;` `|` `&` 与子 shell 切分命令段，`cd` 跟踪执行目录，逐段独立判定，任一危险段拦截整条命令。
-3. **拆包装**：递归剥离 `sudo` / `env` / `command` / `timeout` 等包装命令与 `bash -c` / `sh -c` / `su -c` 内嵌负载（深度上限 8，超限按需确认）。
-4. **判定合并**：致命优先、任一拒绝则拒绝、任一需确认则确认；策略 overrides 可调整高/中危动作，**致命规则不可降级**。
+1. **Tokenize**: POSIX-style lexing (quotes/escapes/operators/heredoc bodies/command-substitution extraction); falls back to a coarse-grained pattern scan when input is over the limit or unparseable.
+2. **Segment**: splits command segments by `&&` `||` `;` `|` `&` and sub-shells; tracks `cd` execution directories; each segment is judged independently, and any dangerous segment blocks the whole command.
+3. **Unwrap**: recursively strips wrapper commands like `sudo` / `env` / `command` / `timeout` and embedded loads in `bash -c` / `sh -c` / `su -c` (depth limit 8; beyond the limit, ask as needed).
+4. **Verdict merge**: fatal first; any deny → deny; any ask → ask; policy `overrides` can adjust high/medium actions, but **fatal rules cannot be downgraded**.
 
-## 安装
+## Installation
 
-要求 Node.js ≥ 18.13，无任何 npm 依赖。
+Requires Node.js ≥ 18.13, no npm dependencies.
 
 ```bash
 # 直接运行（无需安装）
@@ -55,17 +55,17 @@ node bin/barricade.js --help
 npm link          # 之后可直接使用 barricade 命令
 ```
 
-## 接入 dsh（DeepSeek Harness）
+## Integrating with dsh (DeepSeek Harness)
 
-本仓库即一个合法的 dsh bundle：`package.json` 声明了 `dsh.bundle`，`cordis.patch.yml` 是配置层补丁，`plugin.js` 是插件入口。
+This repository is a valid dsh bundle: `package.json` declares `dsh.bundle`, `cordis.patch.yml` is the config-layer patch, and `plugin.js` is the plugin entry point.
 
-### 在 DSH 中安装
+### Installing in DSH
 
 ```bash
 dsh plugin --profile demo add github:JohnXu22786/safety-net
 ```
 
-### 加载方式
+### Loading
 
 ```bash
 # 在目标 profile 中安装本 bundle（本地目录或已发布的 npm 包名）
@@ -75,7 +75,7 @@ dsh plugin --profile web add ../dsh-barricade      # 或 dsh plugin --profile we
 dsh --profile web
 ```
 
-加载后 Cordis 会按 `cordis.patch.yml` 插入插件行：
+After loading, Cordis inserts the plugin line per `cordis.patch.yml`:
 
 ```yaml
 - insert:
@@ -83,25 +83,25 @@ dsh --profile web
       name: dsh-barricade
 ```
 
-### 插件接口
+### Plugin Interface
 
-| 项 | 值 |
+| Item | Value |
 |---|---|
-| 入口 | `plugin.js`（`main` 字段），导出 `name` / `inject` / `apply(ctx, config)` |
-| 事件 | 监听工具执行管线事件 `tools/pre-execute`（waterfall），在工具真正执行前介入 |
-| 拦截方式 | 判定为需拦截时抛出 `BarricadeBlocked` 错误，工具调用失败且原因对模型可见 |
-| 配置 | `cordis.patch.yml` 中 `config` 字段，或 `dsh --patch` 覆盖层 |
+| Entry | `plugin.js` (`main` field), exports `name` / `inject` / `apply(ctx, config)` |
+| Events | listens to the tool execution pipeline event `tools/pre-execute` (waterfall), intervening before the tool actually runs |
+| Interception | throws `BarricadeBlocked` when a block verdict is produced; the tool call fails and the reason is visible to the model |
+| Config | the `config` field in `cordis.patch.yml`, or a `dsh --patch` overlay |
 
-可用配置项（均可省略）：
+Available config keys (all optional):
 
-| 配置键 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `mode` | `"deny"` | `deny`：命中即拒绝；`ask`：经 `ctx.approval` 服务请求人工确认，确认被拒或服务不可用时按拒绝处理 |
-| `toolNames` | 常见 shell 工具名列表 | 仅拦截这些工具；亦可用环境变量 `BARRICADE_TOOLS` 覆盖（逗号分隔） |
-| `commandPath` | `"args.command"` | 工具调用中命令文本的取值路径（点路径），兼容 `input.command` / `command` 等形态 |
-| `level` | 策略文件 | `relaxed` / `balanced` / `vigilant` |
+| `mode` | `"deny"` | `deny`: deny on match; `ask`: request human confirmation through the `ctx.approval` service; if confirmation is refused or the service is unavailable, treat as deny |
+| `toolNames` | common shell tool name list | only intercept these tools; can also be overridden via the `BARRICADE_TOOLS` env var (comma-separated) |
+| `commandPath` | `"args.command"` | dot-path to the command text in the tool call; compatible with `input.command` / `command` and other shapes |
+| `level` | policy file | `relaxed` / `balanced` / `vigilant` |
 
-示例（写入 profile 的 `cordis.patch.yml` 或 `--patch` 覆盖层）：
+Example (written into the profile's `cordis.patch.yml` or a `--patch` overlay):
 
 ```yaml
 - insert:
@@ -112,13 +112,13 @@ dsh --profile web
         toolNames: [bash, run_code, run_command]
 ```
 
-> 说明：dsh 当前处于开发者预览期，接口可能演进。`apply` 对工具调用形态做了防御式识别（`name/tool`、`args/input` 等），并对 `ctx.approval` 的多种调用形态做探测；任何形态不可用时按拒绝处理，保证失败安全。若上游事件契约变化，只需调整 `plugin.js` 中的事件名与字段路径。
+> Note: dsh is currently in developer preview and its interfaces may evolve. `apply` defensively recognizes tool-call shapes (`name/tool`, `args/input`, etc.) and probes the various calling forms of `ctx.approval`; if any form is unavailable it falls back to deny, keeping fail-safe. If the upstream event contract changes, just adjust the event name and field paths in `plugin.js`.
 
-### 其他 harness 接入
+### Other Harness Integration
 
-判定核心不依赖任何 harness，以下三种形态任选：
+The verdict core depends on no harness; pick any of the three forms:
 
-**① stdin-hook 契约**（适用于支持「工具调用前运行钩子」的 harness，如 PreToolUse 类钩子）：
+**① stdin-hook contract** (for harnesses that support "run a hook before tool invocation", such as PreToolUse-style hooks):
 
 ```
 stdin  : {"command": "<待执行命令>", "cwd": "<可选>"}    # 或纯命令文本
@@ -126,7 +126,7 @@ stdout : {"action": "allow|ask|deny", "severity": ..., "matches": [...], "warnin
 exit   : 0（正常输出判定）；加 --exit-on-block 时拦截退出 1
 ```
 
-示例（将钩子命令指向 `node <本目录>/bin/barricade.js hook`）：
+Example (point the hook command at `node <本目录>/bin/barricade.js hook`):
 
 ```bash
 echo '{"command":"git push --force origin main"}' | node bin/barricade.js hook
@@ -134,11 +134,11 @@ echo '{"command":"git push --force origin main"}' | node bin/barricade.js hook
 #  "reason":"强制推送覆盖远端提交历史，可能造成他人工作丢失","matches":[...],"warnings":[]}
 ```
 
-**② gate 包装**（把 harness 的 shell 换成 `barricade gate -- <命令>`）：终端交互确认后执行，非终端环境直接拦截。
+**② gate wrapper** (swap the harness's shell for `barricade gate -- <command>`): executes after terminal confirmation; non-terminal environments are blocked outright.
 
-**③ 进程内复用**：`createInterceptor(config)` 返回纯判定函数，任何 Node 进程内 harness 可直接调用（见 `plugin.js` 顶部注释）。
+**③ in-process reuse**: `createInterceptor(config)` returns a pure verdict function callable from any Node in-process harness (see the comments at the top of `plugin.js`).
 
-## CLI 使用说明
+## CLI Usage
 
 ```
 barricade <子命令> [选项]
@@ -158,7 +158,7 @@ barricade <子命令> [选项]
   -h, --help              -v, --version --tail <N>
 ```
 
-示例：
+Examples:
 
 ```bash
 barricade check -c "rm -rf /"                 # 退出 1，打印拦截原因
@@ -166,9 +166,9 @@ barricade analyze --json -c "git reset --hard"
 barricade gate -- "npm run build"             # 终端下交互确认
 ```
 
-## 策略配置
+## Policy Configuration
 
-配置文件：用户级 `~/.barricade/barricade.json`（`BARRICADE_HOME` 可改），项目级 `.barricade.json`（当前目录，优先于用户级）。均为 JSON，字段缺失/损坏时**挽救式回退默认值**并打印警告，绝不让策略文件把工作流打断。
+Config files: user-level `~/.barricade/barricade.json` (`BARRICADE_HOME` to change), project-level `.barricade.json` (current directory, takes precedence over user-level). Both are JSON; missing/corrupt fields **rescue-fall back to defaults** with a warning — a policy file can never interrupt your workflow.
 
 ```json
 {
@@ -190,28 +190,28 @@ barricade gate -- "npm run build"             # 终端下交互确认
 }
 ```
 
-| 字段 | 说明 |
+| Field | Description |
 |---|---|
-| `level` | `relaxed`（中危放行）/ `balanced`（中危确认）/ `vigilant`（+ 无法解析输入按需确认） |
-| `failClosed` | 命令无法解析时也要求确认 |
-| `allowlist` | 前缀放行清单（`git status` 放行 `git status --porcelain`） |
-| `overrides` | 按规则 id 调整动作：`allow` / `ask` / `deny` / `off`；**致命规则不可降级** |
-| `rules` | 自定义规则：命令 + 子命令(可选) + 任一参数命中（支持短旗标解绑） |
-| `confirmation.timeoutSeconds` | 交互确认超时（秒），超时按拒绝；0 为不超时 |
+| `level` | `relaxed` (medium allowed) / `balanced` (medium asks) / `vigilant` (+ unparseable input asks as needed) |
+| `failClosed` | require confirmation even when a command cannot be parsed |
+| `allowlist` | prefix allowlist (`git status` allows `git status --porcelain`) |
+| `overrides` | adjust per-rule-id actions: `allow` / `ask` / `deny` / `off`; **fatal rules cannot be downgraded** |
+| `rules` | custom rules: command + optional subcommand + any arg match (short-flag unbinding supported) |
+| `confirmation.timeoutSeconds` | interactive confirmation timeout (seconds); timeout counts as deny; 0 means no timeout |
 
-环境变量（只升不降）：
+Environment variables (raise-only, never lower):
 
-| 变量 | 说明 |
+| Variable | Description |
 |---|---|
-| `BARRICADE_HOME` | 数据目录（策略、审计日志），默认 `~/.barricade` |
-| `BARRICADE_POLICY` | 指定用户策略文件路径 |
-| `BARRICADE_LEVEL` | 提升等级（仅当高于文件等级时生效） |
-| `BARRICADE_FAIL_CLOSED=1` | 开启 fail-closed |
-| `BARRICADE_CONFIRM_TIMEOUT` | 确认超时秒数 |
-| `BARRICADE_TOOLS` | dsh 插件拦截的工具名单（逗号分隔） |
-| `BARRICADE_NO_COLOR` / `NO_COLOR` | 关闭彩色输出 |
+| `BARRICADE_HOME` | data directory (policy, audit logs), default `~/.barricade` |
+| `BARRICADE_POLICY` | specify a user policy file path |
+| `BARRICADE_LEVEL` | raise the level (only takes effect when higher than the file level) |
+| `BARRICADE_FAIL_CLOSED=1` | enable fail-closed |
+| `BARRICADE_CONFIRM_TIMEOUT` | confirmation timeout seconds |
+| `BARRICADE_TOOLS` | comma-separated list of tools the dsh plugin intercepts |
+| `BARRICADE_NO_COLOR` / `NO_COLOR` | disable colored output |
 
-## 交互确认
+## Interactive Confirmation
 
 ```
 ⚠️  Barricade 需要确认此命令 [高危]
@@ -221,42 +221,42 @@ barricade gate -- "npm run build"             # 终端下交互确认
 >
 ```
 
-- `a` 会把规则写入用户策略文件（`overrides`）；致命规则不可永久放行。
-- `s` 把规则记入本次调用的会话集合；`gate` 单次调用内只确认一次，`s` 与 `y` 等价；进程内复用同一 session 集合的场景下可跨调用生效。
-- 命令展示前会转义控制字符并截断，防止终端注入（判定文本与审计日志同样处理）。
+- `a` writes the rule into the user policy file (`overrides`); fatal rules cannot be allowed permanently.
+- `s` records the rule into this invocation's session set; within a single `gate` call it confirms only once, so `s` is equivalent to `y`; it can take effect across calls when the same session set is reused in-process.
+- Control characters are escaped and the command truncated before display, preventing terminal injection (the verdict text and audit logs are handled the same way).
 
-## 内置规则清单（节选）
+## Built-in Rules (excerpt)
 
-| 规则 id | 严重度 | 说明 |
+| Rule id | Severity | Description |
 |---|---|---|
-| `fs/rm-root` / `fs/rm-home` | 致命 | 删除根目录 / 主目录 |
-| `fs/rm-git` | 致命 | 删除/写入/移动 `.git` 内部内容 |
-| `fs/mkfs-device` / `fs/dd-device` | 致命/高危 | 格式化或写入块设备（`/dev/null` 等安全目标除外） |
-| `fs/rm-outside` / `fs/rm-dynamic` / `fs/rm-workspace` | 高/高/中 | rm -rf 目标作用域分级 |
-| `fs/find-delete` / `fs/shred` / `fs/chmod-recursive` / `fs/chown-recursive` | 高/高/中/中 | 批量或递归破坏性操作 |
-| `git/reset-hard` / `git/clean-force` / `git/push-force` / `git/push-delete` | 高/高/高/中 | 覆盖历史、丢弃未提交修改、删远端分支 |
-| `git/checkout-force` / `git/checkout-discard` / `git/switch-force` / `git/restore-worktree` | 高 | 丢弃工作区修改 |
-| `git/branch-delete-force` / `git/stash-drop` / `git/stash-clear` / `git/tag-delete` | 高/高/高/中 | 不可恢复的引用/暂存操作 |
-| `git/fetch-force` / `git/ssh-env` | 中/高 | 覆盖远端引用 / GIT_SSH* 与网络子命令组合 |
-| `shell/curl-pipe-sh` / `shell/fork-bomb` / `interp/embedded` | 高 | 远程脚本管道、fork 炸弹、解释器内嵌删除代码 |
-| `sys/shutdown` / `sys/reboot` / `sys/powershell-remove` / `sys/cmd-del` | 高/高/中/中 | 系统级操作 |
+| `fs/rm-root` / `fs/rm-home` | fatal | delete root / home directory |
+| `fs/rm-git` | fatal | delete/write/move `.git` internals |
+| `fs/mkfs-device` / `fs/dd-device` | fatal/high | format or write block devices (safe targets such as `/dev/null` excluded) |
+| `fs/rm-outside` / `fs/rm-dynamic` / `fs/rm-workspace` | high/high/medium | rm -rf target scope tiers |
+| `fs/find-delete` / `fs/shred` / `fs/chmod-recursive` / `fs/chown-recursive` | high/high/medium/medium | bulk or recursive destructive operations |
+| `git/reset-hard` / `git/clean-force` / `git/push-force` / `git/push-delete` | high/high/high/medium | overwrite history, discard uncommitted changes, delete remote branches |
+| `git/checkout-force` / `git/checkout-discard` / `git/switch-force` / `git/restore-worktree` | high | discard working-tree changes |
+| `git/branch-delete-force` / `git/stash-drop` / `git/stash-clear` / `git/tag-delete` | high/high/high/medium | unrecoverable ref/stash operations |
+| `git/fetch-force` / `git/ssh-env` | medium/high | overwrite remote refs / GIT_SSH* combined with network subcommands |
+| `shell/curl-pipe-sh` / `shell/fork-bomb` / `interp/embedded` | high | remote-script piping, fork bombs, interpreter-embedded deletion code |
+| `sys/shutdown` / `sys/reboot` / `sys/powershell-remove` / `sys/cmd-del` | high/high/medium/medium | system-level operations |
 
-完整清单与动作映射见 `barricade rules`。
+The full list and action mapping: `barricade rules`.
 
-## 安全模型与已知边界
+## Security Model and Known Boundaries
 
-- **不是沙箱**，不构成特权边界。它拦截的是「harness 通过受支持入口发起的命令」；绕过集成的方式（例如用编辑器工具直接写文件、在容器外手工执行）不在保护范围内。
-- **静态分析的固有局限**：`bash <未知脚本>`、`eval "$X"` 这类运行期才可知的内容无法审查——`vigilant` 等级下会要求确认，默认等级下直接放行（可配置 `failClosed` 或自定义规则收紧）。
-- 分析按 POSIX 路径语义处理命令文本，与运行平台无关；Windows 下 `gate` 经 `cmd /c` 执行，命令本身仍按 POSIX 语法分析。
-- 输入长度上限 128 KiB、嵌套深度上限 8 层，超限走粗粒度扫描或按需确认，防止构造畸形输入拖垮分析。
+- **Not a sandbox**, and not a privilege boundary. It intercepts "commands the harness issues through supported entry points"; bypassing the integration (e.g. writing files directly with an editor tool, executing manually outside a container) is out of protection scope.
+- **Inherent limits of static analysis**: runtime-only content such as `bash <unknown script>` and `eval "$X"` cannot be inspected — under `vigilant` they require confirmation; under the default level they pass (tightenable with `failClosed` or custom rules).
+- Analysis handles command text with POSIX path semantics, independent of the running platform; on Windows, `gate` runs via `cmd /c`, while the command itself is still parsed with POSIX syntax.
+- Input size limit 128 KiB and nesting depth limit 8; beyond the limits it falls back to coarse-grained scanning or asks as needed, preventing malformed input from stalling analysis.
 
-## 开发
+## Development
 
 ```bash
 node --test        # 或 npm test；测试用例见 test/ 目录
 ```
 
-结构：
+Structure:
 
 ```
 bin/barricade.js    CLI 入口
