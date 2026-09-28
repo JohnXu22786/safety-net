@@ -91,6 +91,11 @@ test('rm -rf 临时目录 → 放行', () => {
   assert.ok(isAllow('rm -rf /var/tmp/cache'))
 })
 
+test('rm -rf 临时目录内的工作区仍放行', () => {
+  const opts = { cwd: '/tmp/project', home: '/home/u' }
+  assert.ok(isAllow('rm -rf ./dist', opts))
+})
+
 test('rm 不带 -r 的普通删除 → 放行', () => {
   assert.ok(isAllow('rm file.txt'))
   assert.ok(isAllow('rm -f file.txt'))
