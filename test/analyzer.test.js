@@ -60,6 +60,14 @@ test('rm -rf 工作区内 → 中危确认（balanced）', () => {
   assert.equal(action('rm -rf ./dist'), 'ask')
 })
 
+test('rm -rf 主目录内的工作区 → 按工作区等级分类', () => {
+  const opts = { cwd: '/home/u/project', home: '/home/u' }
+  assert.deepEqual(ruleIds('rm -rf ./dist', opts), ['fs/rm-workspace'])
+  assert.equal(action('rm -rf ./dist', { ...opts, level: 'relaxed' }), 'allow')
+  assert.deepEqual(ruleIds('rm -rf ../Documents', opts), ['fs/rm-outside'])
+  assert.equal(action('rm -rf ../Documents', opts), 'ask')
+})
+
 test('rm -rf 工作区外 → 高危确认', () => {
   assert.deepEqual(ruleIds('rm -rf /other/x'), ['fs/rm-outside'])
   assert.equal(action('rm -rf /other/x'), 'ask')

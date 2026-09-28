@@ -77,14 +77,15 @@ test('拦截器：声称的工作目录越出真实工作区时被忽略', async
   assert.equal(r.action, 'block')
 })
 
-test('拦截器：合法配置的 level 生效', async () => {
+test('拦截器：工作区位于用户主目录内时配置 level 生效', async () => {
   const relaxed = createInterceptor({ level: 'relaxed' })
-  // 中危在 relaxed 下放行
+  // checkout 位于 home 下时，工作区内目标仍属中危，relaxed 应放行
   const r = await relaxed({ name: 'bash', args: { command: 'rm -rf ./dist' } })
   assert.equal(r.action, 'allow')
   const vigilant = createInterceptor({ level: 'vigilant' })
   const r2 = await vigilant({ name: 'bash', args: { command: 'rm -rf ./dist' } })
   assert.equal(r2.action, 'block')
+  assert.ok(r2.reason.includes('fs/rm-workspace'))
 })
 
 test('apply：注册 tools/pre-execute 监听并拦截破坏性调用', async () => {
