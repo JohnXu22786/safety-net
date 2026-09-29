@@ -841,14 +841,14 @@ function classifyRmTarget(rawTarget, ctx) {
   if (resolved === '/') return mkMatch(findRule('fs/rm-root'), `目标为根目录: ${rawTarget}`)
   if (resolved === ctx.home) return mkMatch(findRule('fs/rm-home'), `目标为用户主目录: ${rawTarget}`)
   if (containsGitMeta(resolved)) return mkMatch(findRule('fs/rm-git'), `目标 ${rawTarget} 位于 .git 内部`)
+  if (isTempPath(resolved, ctx.env) && !isTempPath(ctx.home, ctx.env)) return null
+  if (ctx.cwd && isInside(resolved, ctx.workspace)) {
+    return mkMatch(findRule('fs/rm-workspace'), `目标 ${rawTarget} 位于工作区内`)
+  }
   if (resolved.startsWith(ctx.home + '/')) {
     return mkMatch(findRule('fs/rm-outside'), `目标 ${rawTarget} 位于主目录下`)
   }
-  if (isTempPath(resolved, ctx.env)) return null
   if (!ctx.cwd) return mkMatch(findRule('fs/rm-dynamic'), '当前工作目录未知，无法判定删除范围')
-  if (isInside(resolved, ctx.workspace)) {
-    return mkMatch(findRule('fs/rm-workspace'), `目标 ${rawTarget} 位于工作区内`)
-  }
   return mkMatch(findRule('fs/rm-outside'), `目标 ${rawTarget} 位于工作区外`)
 }
 

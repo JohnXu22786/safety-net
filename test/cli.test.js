@@ -112,16 +112,20 @@ test('gate：安全命令真实执行', () => {
 })
 
 test('gate：危险命令被拦截且不执行', () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'barricade-gate-'))
-  const victim = path.join(dir, 'victim')
-  fs.mkdirSync(victim)
-  const keep = path.join(victim, 'keep.txt')
-  fs.writeFileSync(keep, 'data')
-  const cmd = `rm -rf "${victim}"`
-  const r = runStatus(['gate', '--', cmd], { home: dir })
-  assert.equal(r.code, 1)
-  assert.ok(fs.existsSync(keep), '危险命令不应被执行')
-  assert.ok(r.stdout.includes('拦截'))
+  const dir = mkdtempSync(path.join(process.cwd(), '.barricade-gate-'))
+  try {
+    const victim = path.join(dir, 'victim')
+    fs.mkdirSync(victim)
+    const keep = path.join(victim, 'keep.txt')
+    fs.writeFileSync(keep, 'data')
+    const cmd = `rm -rf "${victim}"`
+    const r = runStatus(['gate', '--', cmd], { home: dir })
+    assert.ok(fs.existsSync(keep), '危险命令不应被执行')
+    assert.equal(r.code, 1)
+    assert.ok(r.stdout.includes('拦截'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('gate：致命命令同样被拦截', () => {

@@ -60,6 +60,26 @@ test('rm -rf 工作区内 → 中危确认（balanced）', () => {
   assert.equal(action('rm -rf ./dist'), 'ask')
 })
 
+test('rm -rf 主目录内的工作区 → 按工作区等级分类', () => {
+  const opts = { cwd: '/home/u/project', home: '/home/u' }
+  assert.deepEqual(ruleIds('rm -rf ./dist', opts), ['fs/rm-workspace'])
+  assert.equal(action('rm -rf ./dist', { ...opts, level: 'relaxed' }), 'allow')
+  assert.deepEqual(ruleIds('rm -rf ../Documents', opts), ['fs/rm-outside'])
+  assert.equal(action('rm -rf ../Documents', opts), 'ask')
+})
+
+test('TMPDIR 位于主目录时仍保护主目录下的非工作区目标', () => {
+  const opts = { cwd: '/home/u/project', home: '/home/u', env: { TMPDIR: '/home/u' } }
+  assert.deepEqual(ruleIds('rm -rf ~/Documents', opts), ['fs/rm-outside'])
+  assert.equal(action('rm -rf ~/Documents', opts), 'ask')
+  assert.deepEqual(ruleIds('rm -rf ./dist', opts), ['fs/rm-workspace'])
+})
+
+test('主目录下的专用临时目录仍放行', () => {
+  const opts = { cwd: '/work', home: '/home/u', env: { TMPDIR: '/home/u/tmp' } }
+  assert.ok(isAllow('rm -rf /home/u/tmp/build', opts))
+})
+
 test('rm -rf 工作区外 → 高危确认', () => {
   assert.deepEqual(ruleIds('rm -rf /other/x'), ['fs/rm-outside'])
   assert.equal(action('rm -rf /other/x'), 'ask')
@@ -81,6 +101,11 @@ test('rm -rf 临时目录 → 放行', () => {
   assert.ok(isAllow('rm -rf /tmp/build'))
   assert.ok(isAllow('rm -rf /tmp/*'))
   assert.ok(isAllow('rm -rf /var/tmp/cache'))
+})
+
+test('rm -rf 临时目录内的工作区仍放行', () => {
+  const opts = { cwd: '/tmp/project', home: '/home/u' }
+  assert.ok(isAllow('rm -rf ./dist', opts))
 })
 
 test('rm 不带 -r 的普通删除 → 放行', () => {
