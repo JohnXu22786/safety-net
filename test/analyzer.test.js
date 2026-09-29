@@ -68,6 +68,18 @@ test('rm -rf 主目录内的工作区 → 按工作区等级分类', () => {
   assert.equal(action('rm -rf ../Documents', opts), 'ask')
 })
 
+test('TMPDIR 位于主目录时仍保护主目录下的非工作区目标', () => {
+  const opts = { cwd: '/home/u/project', home: '/home/u', env: { TMPDIR: '/home/u' } }
+  assert.deepEqual(ruleIds('rm -rf ~/Documents', opts), ['fs/rm-outside'])
+  assert.equal(action('rm -rf ~/Documents', opts), 'ask')
+  assert.deepEqual(ruleIds('rm -rf ./dist', opts), ['fs/rm-workspace'])
+})
+
+test('主目录下的专用临时目录仍放行', () => {
+  const opts = { cwd: '/work', home: '/home/u', env: { TMPDIR: '/home/u/tmp' } }
+  assert.ok(isAllow('rm -rf /home/u/tmp/build', opts))
+})
+
 test('rm -rf 工作区外 → 高危确认', () => {
   assert.deepEqual(ruleIds('rm -rf /other/x'), ['fs/rm-outside'])
   assert.equal(action('rm -rf /other/x'), 'ask')
