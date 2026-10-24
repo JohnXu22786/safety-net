@@ -34,12 +34,11 @@ export const DEFAULT_TOOLS = [
   'command', 'cmd', 'powershell', 'pwsh', 'exec',
 ]
 
-/** 入参不是 shell 命令、而是代码体的工具：缺字段时放行，有字段时照样分析。 */
+/** 参数是代码体而非 shell 命令的工具；必须使用独立的 fail-closed 策略。 */
 export const CODE_TOOLS = ['run_code']
 
 /** 自动探测命令字段的候选路径（按序；配置了 commandPath 时只用配置值）。 */
 const COMMAND_PATHS = ['arguments.command', 'args.command', 'input.command', 'command']
-const CODE_PATHS = ['arguments.code', 'args.code', 'input.code', 'code']
 
 /** 供其他 harness 进程内复用: 纯判定逻辑，不依赖 dsh 上下文。
  * 返回一个可调用函数（intercept），同时携带 .config 便于自省。
@@ -57,11 +56,30 @@ export function createInterceptor(config = {}, env = process.env) {
     const tool = call.name ?? call.tool ?? call.toolName
     if (typeof tool !== 'string' || !toolNames.includes(tool)) return { action: 'allow' }
     const codeTool = CODE_TOOLS.includes(tool)
-    const command = resolveCommand(call, commandPath, codeTool ? CODE_PATHS : COMMAND_PATHS)
+    if (codeTool) {
+      const code = resolveCode(call)
+      if (typeof code !== 'string' || !code.trim()) {
+        return {
+          action: 'block',
+          verdict: 'deny',
+          reason: 'Barricade: run_code 缺少非空字符串 code，已拒绝执行',
+        }
+      }
+      const verdict = createCodeVerdict(code)
+      if (mode === 'ask') {
+        // 任意 JavaScript 都不可由 shell 分析器安全验证，只能经过显式 approval。
+        if (approval) {
+          const approved = await requestApproval(approval, verdict, true)
+          if (approved) return { action: 'allow', confirmed: true }
+          return { action: 'block', verdict: 'deny', reason: verdict.format() }
+        }
+        return { action: 'block', verdict: 'ask', reason: verdict.format() }
+      }
+      return { action: 'block', verdict: 'deny', reason: verdict.format() }
+    }
+
+    const command = resolveCommand(call, commandPath, COMMAND_PATHS)
     if (typeof command !== 'string' || !command.trim()) {
-      // 命令字段缺失/类型异常：对命令类工具失败安全拒绝（防协议违约绕过）；
-      // 代码类工具本就没有命令字段，放行（误伤代价高于收益）。
-      if (codeTool) return { action: 'allow' }
       return {
         action: 'block',
         verdict: 'deny',
@@ -132,6 +150,22 @@ function resolveCommand(call, configured, candidates) {
   return undefined
 }
 
+/** 只读取已知 code 字段，避免将 run_code 参数当作 shell 命令兜底解析。 */
+function resolveCode(call) {
+  for (const box of [call.arguments, call.args, call.input, call]) {
+    if (box && typeof box === 'object' && box.code !== undefined) return box.code
+  }
+  return undefined
+}
+
+function createCodeVerdict(code) {
+  const reason = 'Barricade: run_code 的 JavaScript 无法由 shell 分析器验证，需显式批准'
+  return {
+    format: () => reason,
+    toJSON: () => ({ action: 'ask', tool: 'run_code', code, reason }),
+  }
+}
+
 /** 按点路径取值（args.command / input.command / command），并兜底顶层 command 键 */
 function getByPath(obj, dotPath) {
   const parts = String(dotPath).split('.')
@@ -159,7 +193,7 @@ export function readService(ctx, service) {
  * dsh 的 approval 接口处于演进中，这里对多种形态做防御式探测；
  * 任何形态都不可用时返回 false（拒绝）。
  */
-async function requestApproval(approval, verdict) {
+async function requestApproval(approval, verdict, requireExplicit = false) {
   if (!approval) return false
   for (const fnName of ['ask', 'request', 'create', 'prompt']) {
     const fn = approval[fnName]
@@ -171,7 +205,7 @@ async function requestApproval(approval, verdict) {
         detail: verdict.format(),
         payload: verdict.toJSON(),
       })
-      return interpretApproval(r)
+      return interpretApproval(r, requireExplicit)
     } catch {
       // 尝试下一种形态
     }
@@ -179,14 +213,16 @@ async function requestApproval(approval, verdict) {
   return false
 }
 
-function interpretApproval(r) {
+function interpretApproval(r, requireExplicit = false) {
+  const explicitlyApproved = (value) =>
+    /^(allow|allowed|allow-once|allowed-once|approve|approved|yes)$/i.test(String(value))
   if (typeof r === 'boolean') return r
-  if (typeof r === 'string') return !/^(deny|reject|refuse|no)/i.test(r)
+  if (typeof r === 'string') return requireExplicit ? explicitlyApproved(r) : !/^(deny|reject|refuse|no)/i.test(r)
   if (r && typeof r === 'object') {
     if (typeof r.approved === 'boolean') return r.approved
     if (typeof r.allowed === 'boolean') return r.allowed
-    if (r.decision !== undefined) return r.decision !== 'deny' && r.decision !== 'reject'
-    if (r.status !== undefined) return !/^(deny|reject|refused)$/i.test(String(r.status))
+    if (r.decision !== undefined) return requireExplicit ? explicitlyApproved(r.decision) : r.decision !== 'deny' && r.decision !== 'reject'
+    if (r.status !== undefined) return requireExplicit ? explicitlyApproved(r.status) : !/^(deny|reject|refused)$/i.test(String(r.status))
   }
   return false
 }

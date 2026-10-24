@@ -169,8 +169,65 @@ test('拦截器：exec.arguments.command（host 真实结构）被识别', async
   assert.ok(r.reason.includes('fs/rm-root'))
 })
 
-test('拦截器：run_code 无命令字段时放行，带 code 时分析', async () => {
+test('拦截器：run_code 的任意 JavaScript 默认拒绝，不交给 shell 分析器', async () => {
   const interceptor = createInterceptor({})
-  assert.equal((await interceptor({ name: 'run_code', arguments: { code: 'return 1' } })).action, 'allow')
-  assert.equal((await interceptor({ name: 'run_code', arguments: { command: 'rm -rf /' } })).action, 'block')
+  const result = await interceptor({
+    name: 'run_code',
+    arguments: { code: 'require("node:fs").rmSync("/tmp/barricade-test-target", { recursive: true, force: true })' },
+  })
+  assert.equal(result.action, 'block')
+  assert.equal(result.verdict, 'deny')
+})
+
+test('拦截器：run_code 缺失、空白或非字符串 code 时失败安全拒绝', async () => {
+  const interceptor = createInterceptor({ mode: 'ask' })
+  for (const arguments_ of [{}, { code: '' }, { code: ' \n\t' }, { code: 42 }]) {
+    const result = await interceptor({ name: 'run_code', arguments: arguments_ })
+    assert.equal(result.action, 'block')
+    assert.equal(result.verdict, 'deny')
+  }
+})
+
+test('apply：良性 run_code 也必须走宿主 ask 决策后才能执行', async () => {
+  const handlers = {}
+  let nextCalls = 0
+  const ctx = {
+    on(event, fn) {
+      handlers[event] = fn
+    },
+    get(name) {
+      return name === 'approval' ? {} : undefined
+    },
+  }
+  apply(ctx, { mode: 'ask' })
+  const result = await handlers['tools/pre-execute'](
+    { name: 'run_code', arguments: { code: 'return 1' } },
+    async () => {
+      nextCalls += 1
+      return { kind: 'allow' }
+    },
+  )
+  assert.equal(result.kind, 'ask')
+  assert.equal(nextCalls, 0)
+
+  let approvalRequest
+  const approved = createInterceptor({
+    mode: 'ask',
+    approval: {
+      request: async (request) => {
+        approvalRequest = request
+        return 'allowed-once'
+      },
+    },
+  })
+  const approvedResult = await approved({ name: 'run_code', arguments: { code: 'return 1' } })
+  assert.equal(approvedResult.action, 'allow')
+  assert.equal(approvedResult.confirmed, true)
+  assert.equal(approvalRequest.kind, 'barricade-confirm')
+  assert.equal(approvalRequest.payload.code, 'return 1')
+
+  const unapproved = createInterceptor({ mode: 'ask', approval: { request: async () => 'pending' } })
+  const unapprovedResult = await unapproved({ name: 'run_code', arguments: { code: 'return 1' } })
+  assert.equal(unapprovedResult.action, 'block')
+  assert.equal(unapprovedResult.verdict, 'deny')
 })
