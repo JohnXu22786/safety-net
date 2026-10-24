@@ -88,7 +88,7 @@ dsh --profile web
 | 项 | 值 |
 |---|---|
 | 入口 | `plugin.js`（`main` 字段），导出 `name` / `inject` / `apply(ctx, config)` |
-| 事件 | 监听工具执行管线事件 `tools/pre-execute`（waterfall），在工具真正执行前介入 |
+| 事件 | `deny` 模式在宿主支持时通过 `ctx.tools.guard()` 在 `tools/pre-execute` waterfall 后执行最终 monotonic 拒绝；旧宿主仍使用 waterfall 拒绝。`ask` 模式继续通过 waterfall 请求宿主确认 |
 | 拦截方式 | 判定为需拦截时抛出 `BarricadeBlocked` 错误，工具调用失败且原因对模型可见 |
 | 配置 | `cordis.patch.yml` 中 `config` 字段，或 `dsh --patch` 覆盖层 |
 
@@ -112,7 +112,7 @@ dsh --profile web
         toolNames: [bash, run_code, run_command]
 ```
 
-> 说明：dsh 当前处于开发者预览期，接口可能演进。`apply` 对工具调用形态做了防御式识别（`name/tool`、`args/input` 等），并对 `ctx.approval` 的多种调用形态做探测；任何形态不可用时按拒绝处理，保证失败安全。若上游事件契约变化，只需调整 `plugin.js` 中的事件名与字段路径。
+> 说明：dsh 当前处于开发者预览期，接口可能演进。`apply` 对工具调用形态做了防御式识别（`name/tool`、`args/input` 等），并对 `ctx.approval` 的多种调用形态做探测；任何形态不可用时按拒绝处理，保证失败安全。若宿主没有 `ctx.tools.guard()`，仍由现有 `tools/pre-execute` listener 拒绝。
 
 ### 其他 harness 接入
 

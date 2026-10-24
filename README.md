@@ -88,7 +88,7 @@ After loading, Cordis inserts the plugin line per `cordis.patch.yml`:
 | Item | Value |
 |---|---|
 | Entry | `plugin.js` (`main` field), exports `name` / `inject` / `apply(ctx, config)` |
-| Events | listens to the tool execution pipeline event `tools/pre-execute` (waterfall), intervening before the tool actually runs |
+| Events | `deny` mode adds `ctx.tools.guard()` when available for a final monotonic denial after the `tools/pre-execute` waterfall; older hosts retain waterfall denial. `ask` mode uses the waterfall for host approval. |
 | Interception | throws `BarricadeBlocked` when a block verdict is produced; the tool call fails and the reason is visible to the model |
 | Config | the `config` field in `cordis.patch.yml`, or a `dsh --patch` overlay |
 
@@ -112,7 +112,7 @@ Example (written into the profile's `cordis.patch.yml` or a `--patch` overlay):
         toolNames: [bash, run_code, run_command]
 ```
 
-> Note: dsh is currently in developer preview and its interfaces may evolve. `apply` defensively recognizes tool-call shapes (`name/tool`, `args/input`, etc.) and probes the various calling forms of `ctx.approval`; if any form is unavailable it falls back to deny, keeping fail-safe. If the upstream event contract changes, just adjust the event name and field paths in `plugin.js`.
+> Note: dsh is currently in developer preview and its interfaces may evolve. `apply` defensively recognizes tool-call shapes (`name/tool`, `args/input`, etc.) and probes the various calling forms of `ctx.approval`; if any form is unavailable it falls back to deny, keeping fail-safe. On hosts without `ctx.tools.guard()`, the existing `tools/pre-execute` denial remains active.
 
 ### Other Harness Integration
 
