@@ -88,7 +88,66 @@ test('拦截器：工作区位于用户主目录内时配置 level 生效', asyn
   assert.ok(r2.reason.includes('fs/rm-workspace'))
 })
 
-test('apply：注册 tools/pre-execute 监听并拦截破坏性调用', async () => {
+test('apply：注册 tools/pre-execute waterfall 监听并拦截破坏性调用', async () => {
+  const handlers = {}
+  const ctx = {
+    on(event, fn) {
+      handlers[event] = fn
+    },
+    get() {
+      return undefined
+    },
+  }
+  apply(ctx, {})
+  assert.ok(typeof handlers['tools/pre-execute'] === 'function')
+  const handler = handlers['tools/pre-execute']
+  const next = async () => ({ kind: 'allow' })
+  // 安全调用：放行，且必须向下游放行（调用 next）
+  const safe = await handler({ name: 'bash', arguments: { command: 'git status' } }, next)
+  assert.equal(safe.kind, 'allow')
+  // 破坏性调用：返回 deny 决策（不再抛错），原因里带规则号
+  const blocked = await handler({ name: 'bash', arguments: { command: 'rm -rf /' } }, next)
+  assert.equal(blocked.kind, 'deny')
+  assert.ok(blocked.reason.includes('fs/rm-root'))
+})
+
+test('apply：ask 模式无 approval 通道时降级为 deny', async () => {
+  const handlers = {}
+  const ctx = {
+    on(event, fn) {
+      handlers[event] = fn
+    },
+    get() {
+      return undefined
+    },
+  }
+  apply(ctx, { mode: 'ask' })
+  const r = await handlers['tools/pre-execute'](
+    { name: 'bash', arguments: { command: 'rm -rf /' } },
+    async () => ({ kind: 'allow' }),
+  )
+  assert.equal(r.kind, 'deny')
+})
+
+test('apply：ask 模式有 approval 通道时返回 ask 决策', async () => {
+  const handlers = {}
+  const ctx = {
+    on(event, fn) {
+      handlers[event] = fn
+    },
+    get(name) {
+      return name === 'approval' ? { request: async () => 'allowed-once' } : undefined
+    },
+  }
+  apply(ctx, { mode: 'ask' })
+  const r = await handlers['tools/pre-execute'](
+    { name: 'bash', arguments: { command: 'rm -rf /' } },
+    async () => ({ kind: 'allow' }),
+  )
+  assert.equal(r.kind, 'ask')
+})
+
+test('apply：ctx 不支持 get 时也不抛错（安全读服务）', async () => {
   const handlers = {}
   const ctx = {
     on(event, fn) {
@@ -96,26 +155,79 @@ test('apply：注册 tools/pre-execute 监听并拦截破坏性调用', async ()
     },
   }
   apply(ctx, {})
-  assert.ok(typeof handlers['tools/pre-execute'] === 'function')
-  // 安全调用正常返回
-  const safe = await handlers['tools/pre-execute']({ name: 'bash', args: { command: 'git status' } })
-  assert.equal(safe.name, 'bash')
-  // 破坏性调用抛错（即拒绝执行）
-  await assert.rejects(
-    handlers['tools/pre-execute']({ name: 'bash', args: { command: 'rm -rf /' } }),
-    (err) => err.message.includes('fs/rm-root'),
+  const r = await handlers['tools/pre-execute'](
+    { name: 'bash', arguments: { command: 'rm -rf /' } },
+    async () => ({ kind: 'allow' }),
   )
+  assert.equal(r.kind, 'deny')
 })
 
-test('apply：ask 模式下 approval 放行则不抛错', async () => {
+test('拦截器：exec.arguments.command（host 真实结构）被识别', async () => {
+  const interceptor = createInterceptor({})
+  const r = await interceptor({ name: 'bash', arguments: { command: 'rm -rf /' } })
+  assert.equal(r.action, 'block')
+  assert.ok(r.reason.includes('fs/rm-root'))
+})
+
+test('拦截器：run_code 的任意 JavaScript 默认拒绝，不交给 shell 分析器', async () => {
+  const interceptor = createInterceptor({})
+  const result = await interceptor({
+    name: 'run_code',
+    arguments: { code: 'require("node:fs").rmSync("/tmp/barricade-test-target", { recursive: true, force: true })' },
+  })
+  assert.equal(result.action, 'block')
+  assert.equal(result.verdict, 'deny')
+})
+
+test('拦截器：run_code 缺失、空白或非字符串 code 时失败安全拒绝', async () => {
+  const interceptor = createInterceptor({ mode: 'ask' })
+  for (const arguments_ of [{}, { code: '' }, { code: ' \n\t' }, { code: 42 }]) {
+    const result = await interceptor({ name: 'run_code', arguments: arguments_ })
+    assert.equal(result.action, 'block')
+    assert.equal(result.verdict, 'deny')
+  }
+})
+
+test('apply：良性 run_code 也必须走宿主 ask 决策后才能执行', async () => {
   const handlers = {}
+  let nextCalls = 0
   const ctx = {
     on(event, fn) {
       handlers[event] = fn
     },
-    approval: { ask: async () => true },
+    get(name) {
+      return name === 'approval' ? {} : undefined
+    },
   }
   apply(ctx, { mode: 'ask' })
-  const r = await handlers['tools/pre-execute']({ name: 'bash', args: { command: 'rm -rf /' } })
-  assert.equal(r.name, 'bash')
+  const result = await handlers['tools/pre-execute'](
+    { name: 'run_code', arguments: { code: 'return 1' } },
+    async () => {
+      nextCalls += 1
+      return { kind: 'allow' }
+    },
+  )
+  assert.equal(result.kind, 'ask')
+  assert.equal(nextCalls, 0)
+
+  let approvalRequest
+  const approved = createInterceptor({
+    mode: 'ask',
+    approval: {
+      request: async (request) => {
+        approvalRequest = request
+        return 'allowed-once'
+      },
+    },
+  })
+  const approvedResult = await approved({ name: 'run_code', arguments: { code: 'return 1' } })
+  assert.equal(approvedResult.action, 'allow')
+  assert.equal(approvedResult.confirmed, true)
+  assert.equal(approvalRequest.kind, 'barricade-confirm')
+  assert.equal(approvalRequest.payload.code, 'return 1')
+
+  const unapproved = createInterceptor({ mode: 'ask', approval: { request: async () => 'pending' } })
+  const unapprovedResult = await unapproved({ name: 'run_code', arguments: { code: 'return 1' } })
+  assert.equal(unapprovedResult.action, 'block')
+  assert.equal(unapprovedResult.verdict, 'deny')
 })
