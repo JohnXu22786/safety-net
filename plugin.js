@@ -2,9 +2,9 @@
 // 接入方式:
 //   - package.json 声明 dsh.bundle + cordis.patch.yml（本仓库已带）
 //   - 安装后 Cordis 加载本模块（main 指向本文件），调用 apply(ctx, config)
-// 行为: 监听工具执行管线事件 tools/pre-execute，拦截 shell 类工具中的破坏性命令。
-//   mode=deny 时直接返回拒绝决策（工具调用失败，模型可见原因）；
-//   mode=ask  时返回询问决策，交给 harness 的 approval 通道请求人工确认；
+// 行为: 拦截 shell 类工具中的破坏性命令。
+//   mode=deny 时在支持的宿主上注册 monotonic guard，并保留 waterfall 拒绝作为兼容保护；
+//   mode=ask  时继续使用 tools/pre-execute 返回询问决策，交给 harness 的 approval 通道请求人工确认；
 //             无 approval 通道或用户拒绝时按拒绝处理（失败安全）。
 //
 // host 契约（0.1.1 修正）:
@@ -18,6 +18,8 @@
 //      即工具参数在 exec.arguments 下（bash/pwsh 为 arguments.command），**不是** args.command。
 //   3) 读服务必须走 ctx.get(name)：cordis 的 ctx Proxy 对未在 inject 中声明的属性会直接抛
 //      "cannot get property \"x\" without inject"，ctx.get 是官方的不抛错读法。
+//   4) 支持 ctx.tools.guard(guard) 的宿主会在 waterfall 后执行同步 monotonic guard；
+//      返回拒绝原因即最终拒绝。较旧宿主没有此能力时仍由 waterfall listener 拒绝。
 import os from 'node:os'
 import path from 'node:path'
 import { analyzeCommand } from './src/analyzer.js'
@@ -49,9 +51,8 @@ export function createInterceptor(config = {}, env = process.env) {
   const parsed = configured ? configured.split(',').map((s) => s.trim()).filter(Boolean) : null
   const toolNames = parsed && parsed.length > 0 ? parsed : DEFAULT_TOOLS
 
-  /** 判定一次工具调用。返回 {action:'allow'} 或
-   *  {action:'block', reason, verdict:'deny'|'ask'}（verdict 供宿主区分"直接拒绝"与"转人工确认"）。 */
-  const intercept = async (call) => {
+  /** 同步分析一次工具调用；approval 留给 async interceptor 处理。 */
+  const inspect = (call) => {
     if (!call || typeof call !== 'object') return { action: 'allow' }
     const tool = call.name ?? call.tool ?? call.toolName
     if (typeof tool !== 'string' || !toolNames.includes(tool)) return { action: 'allow' }
@@ -67,13 +68,13 @@ export function createInterceptor(config = {}, env = process.env) {
       }
       const verdict = createCodeVerdict(code)
       if (mode === 'ask') {
-        // 任意 JavaScript 都不可由 shell 分析器安全验证，只能经过显式 approval。
-        if (approval) {
-          const approved = await requestApproval(approval, verdict, true)
-          if (approved) return { action: 'allow', confirmed: true }
-          return { action: 'block', verdict: 'deny', reason: verdict.format() }
+        return {
+          action: 'block',
+          verdict: 'ask',
+          reason: verdict.format(),
+          approvalVerdict: verdict,
+          requireExplicit: true,
         }
-        return { action: 'block', verdict: 'ask', reason: verdict.format() }
       }
       return { action: 'block', verdict: 'deny', reason: verdict.format() }
     }
@@ -105,15 +106,36 @@ export function createInterceptor(config = {}, env = process.env) {
     })
     if (verdict.action === 'allow') return { action: 'allow' }
     if (mode === 'ask') {
-      // 显式注入的 approval（独立使用/测试）就地确认；否则把询问交给宿主 waterfall 决策
-      if (approval) {
-        const approved = await requestApproval(approval, verdict)
-        if (approved) return { action: 'allow', confirmed: true }
-        return { action: 'block', verdict: 'deny', reason: verdict.format() }
+      return {
+        action: 'block',
+        verdict: 'ask',
+        reason: verdict.format(),
+        approvalVerdict: verdict,
       }
-      return { action: 'block', verdict: 'ask', reason: verdict.format() }
     }
     return { action: 'block', verdict: 'deny', reason: verdict.format() }
+  }
+
+  /** 判定一次工具调用。返回 {action:'allow'} 或
+   *  {action:'block', reason, verdict:'deny'|'ask'}（verdict 供宿主区分"直接拒绝"与"转人工确认"）。 */
+  const intercept = async (call) => {
+    const result = inspect(call)
+    if (result.verdict !== 'ask') return result
+    // 显式注入的 approval（独立使用/测试）就地确认；否则把询问交给宿主 waterfall 决策。
+    if (!approval) return { action: 'block', verdict: 'ask', reason: result.reason }
+    const approved = await requestApproval(approval, result.approvalVerdict, result.requireExplicit)
+    if (approved) return { action: 'allow', confirmed: true }
+    return { action: 'block', verdict: 'deny', reason: result.reason }
+  }
+
+  // DSH 调用此同步路径时，返回字符串即执行最终拒绝；安全调用返回 undefined。
+  const monotonicGuard = (execution) => {
+    try {
+      const result = inspect(execution)
+      return result.action === 'block' && result.verdict === 'deny' ? result.reason : undefined
+    } catch (error) {
+      return 'Barricade: 判定过程异常，已按拒绝处理 — ' + describeError(error)
+    }
   }
 
   const mode = config.mode ?? 'deny'
@@ -127,6 +149,7 @@ export function createInterceptor(config = {}, env = process.env) {
 
   const interceptor = Object.assign(intercept, {
     config: { toolNames, commandPath, mode, approval, level: config.level, policy },
+    monotonicGuard,
   })
   return interceptor
 }
@@ -234,6 +257,15 @@ function interpretApproval(r, requireExplicit = false) {
 export function apply(ctx, config = {}) {
   const approvalService = readService(ctx, 'approval')
   const interceptor = createInterceptor({ ...config })
+
+  if (interceptor.config.mode === 'deny') {
+    try {
+      const tools = ctx?.tools
+      if (typeof tools?.guard === 'function') tools.guard(interceptor.monotonicGuard)
+    } catch {
+      // Older or partial hosts keep the existing fail-closed waterfall listener below.
+    }
+  }
 
   ctx.on('tools/pre-execute', async (exec, next) => {
     let result

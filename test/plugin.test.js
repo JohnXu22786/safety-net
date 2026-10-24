@@ -111,6 +111,39 @@ test('apply：注册 tools/pre-execute waterfall 监听并拦截破坏性调用'
   assert.ok(blocked.reason.includes('fs/rm-root'))
 })
 
+test('apply：默认 deny 注册同步 monotonic guard', () => {
+  const handlers = {}
+  let guard
+  const ctx = {
+    tools: {
+      guard(fn) {
+        guard = fn
+      },
+    },
+    on(event, fn) {
+      handlers[event] = fn
+    },
+    get() {
+      return undefined
+    },
+  }
+  apply(ctx, {})
+  assert.ok(typeof handlers['tools/pre-execute'] === 'function')
+  assert.equal(typeof guard, 'function')
+
+  const safe = guard({ name: 'bash', arguments: { command: 'git status' } })
+  assert.equal(safe, undefined)
+  const blocked = guard({ name: 'bash', arguments: { command: 'rm -rf /' } })
+  assert.equal(typeof blocked, 'string')
+  assert.ok(blocked.includes('fs/rm-root'))
+
+  const codeBlocked = guard({ name: 'run_code', arguments: { code: 'return 1' } })
+  assert.equal(typeof codeBlocked, 'string')
+
+  const malformed = new Proxy({}, { get() { throw new Error('malformed execution') } })
+  assert.ok(guard(malformed).includes('malformed execution'))
+})
+
 test('apply：ask 模式无 approval 通道时降级为 deny', async () => {
   const handlers = {}
   const ctx = {
@@ -131,7 +164,13 @@ test('apply：ask 模式无 approval 通道时降级为 deny', async () => {
 
 test('apply：ask 模式有 approval 通道时返回 ask 决策', async () => {
   const handlers = {}
+  let guardRegistrations = 0
   const ctx = {
+    tools: {
+      guard() {
+        guardRegistrations += 1
+      },
+    },
     on(event, fn) {
       handlers[event] = fn
     },
@@ -140,6 +179,7 @@ test('apply：ask 模式有 approval 通道时返回 ask 决策', async () => {
     },
   }
   apply(ctx, { mode: 'ask' })
+  assert.equal(guardRegistrations, 0)
   const r = await handlers['tools/pre-execute'](
     { name: 'bash', arguments: { command: 'rm -rf /' } },
     async () => ({ kind: 'allow' }),
